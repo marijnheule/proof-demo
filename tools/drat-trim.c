@@ -266,13 +266,13 @@ void printCore (struct solver *S) {
         fprintf (coreFile, "0\n"); } }
     fclose (coreFile); } }
 
-void write_lit (struct solver *S, int lit) { // change to long?
+void write_lit (struct solver *S, FILE *output, int lit) { // change to long?
   unsigned int l = abs (lit) << 1;
   if (lit < 0) l++;
 
   do {
-    if (l <= 127) { fputc ((char)                 l, S->lratFile); }
-    else          { fputc ((char) (128 + (l & 127)), S->lratFile); }
+    if (l <= 127) { fputc ((char)                 l, output); }
+    else          { fputc ((char) (128 + (l & 127)), output); }
     S->nWrites++;
     l = l >> 7; }
   while (l); }
@@ -281,10 +281,10 @@ void printLRATline (struct solver *S, int time) {
   int *line = S->lratTable + S->lratLookup[time];
   if (S->binOutput) {
     fputc ('a', S->lratFile); S->nWrites++;
-    while (*line) write_lit (S, *line++);
-    write_lit (S, *line++);
-    while (*line) write_lit (S, *line++);
-    write_lit (S, *line++); }
+    while (*line) write_lit (S, S->lratFile, *line++);
+    write_lit (S, S->lratFile, *line++);
+    while (*line) write_lit (S, S->lratFile, *line++);
+    write_lit (S, S->lratFile, *line++); }
   else {
     while (*line) fprintf (S->lratFile, "%i ", *line++);
     fprintf (S->lratFile, "%i ", *line++);
@@ -323,19 +323,27 @@ void printProof (struct solver *S) {
       long ad = S->proof[step];
       int *lemmas = S->DB + (ad >> INFOBITS);
       if (!lemmas[1] && (ad & 1)) continue; // don't delete unit clauses
-      if (ad & 1) fprintf (lemmaFile, "d ");
+      if (S->binOutput) {
+        S->nWrites++;
+        if (ad & 1) fputc ('d', lemmaFile);
+        else        fputc ('a', lemmaFile); }
+      else if (ad & 1) fprintf (lemmaFile, "d ");
       int reslit = lemmas[PIVOT];
       while (*lemmas) {
         int lit = *lemmas++;
-        if (lit == reslit)
-        fprintf (lemmaFile, "%i ", lit); }
+        if (lit == reslit) {
+          if (S->binOutput) write_lit (S, lemmaFile, lit);
+          else fprintf (lemmaFile, "%i ", lit); } }
       lemmas = S->DB + (ad >> INFOBITS);
       while (*lemmas) {
         int lit = *lemmas++;
-        if (lit != reslit)
-          fprintf (lemmaFile, "%i ", lit); }
-      fprintf (lemmaFile, "0\n"); }
-    fprintf (lemmaFile, "0\n");
+        if (lit != reslit) {
+          if (S->binOutput) write_lit (S, lemmaFile, lit);
+          else fprintf (lemmaFile, "%i ", lit); } }
+      if (S->binOutput) write_lit (S, lemmaFile, 0);
+      else fprintf (lemmaFile, "0\n"); }
+    if (S->binOutput) { fputc ('a', lemmaFile); write_lit (S, lemmaFile, 0); }
+    else fprintf (lemmaFile, "0\n");
     fclose (lemmaFile); }
 
   if (S->lratFile) {
@@ -347,7 +355,7 @@ void printProof (struct solver *S) {
       if ((ad & 1) == 0) {
         if (lastAdded == 0) {
           if (S->binOutput) {
-            write_lit (S, 0); }
+            write_lit (S, S->lratFile, 0); }
           else {
             fprintf (S->lratFile, "0\n"); } }
         lastAdded = lemmas[ID] >> 1;
@@ -362,12 +370,12 @@ void printProof (struct solver *S) {
             fprintf (S->lratFile, "%i d ", lastAdded); } }
         lastAdded = 0;
         if (S->binOutput) {
-          write_lit (S, lemmas[ID] >> 1); }
+          write_lit (S, S->lratFile, lemmas[ID] >> 1); }
         else {
           fprintf (S->lratFile, "%i ", lemmas[ID] >> 1); } } }
     if (lastAdded != S->nClauses) {
       if (S->binOutput) {
-        write_lit (S, 0); }
+        write_lit (S, S->lratFile, 0); }
       else {
         fprintf(S->lratFile, "0\n"); } }
 
@@ -388,11 +396,11 @@ void printNoCore (struct solver *S) {
       int *clause = S->DB + (S->formula[i] >> INFOBITS);
       if ((clause[ID] & ACTIVE) == 0) {
         if (S->binOutput) {
-          write_lit (S, clause[ID] >> 1); }
+          write_lit (S, S->lratFile, clause[ID] >> 1); }
         else {
           fprintf (S->lratFile, "%i ", clause[ID] >> 1); } } }
     if (S->binOutput) {
-      write_lit (S, 0); }
+      write_lit (S, S->lratFile, 0); }
     else {
       fprintf (S->lratFile, "0\n"); } } }
 
