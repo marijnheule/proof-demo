@@ -1,6 +1,6 @@
 /************************************************************************************[lrat-check.c]
-Copyright (c) 2017 Marijn Heule, The University of Texas at Austin.
-Last edit, June 10, 2017
+Copyright (c) 2017-2018 Marijn Heule, The University of Texas at Austin.
+Last edit, October 27, 2018
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
 associated documentation files (the "Software"), to deal in the Software without restriction,
@@ -59,7 +59,7 @@ int checkRedundancy (int pivot, int start, int *hints, long long thisMask) {
     int flag = 0, *clause = table + clsList[res];
     while (*clause) {
       int clit = convertLit (*clause++);
-//      assert (clit < maskAlloc);
+      assert (clit < maskAlloc);
       if (clit == (pivot^1)) { flag = 1; continue; }
       if (mask[clit  ] >= thisMask) continue;       // lit is falsified
       if (mask[clit^1] >= thisMask) return SUCCESS; // blocked
@@ -71,7 +71,7 @@ int checkRedundancy (int pivot, int start, int *hints, long long thisMask) {
     int unit = 0, *clause = table + clsList[*(hints++)];
     while (*clause) {
       int clit = convertLit (*(clause++));
-//      assert (clit < maskAlloc);
+      assert (clit < maskAlloc);
       if (mask[clit] >= thisMask) continue; // lit is falsified
       if (unit != 0) return FAILED;
       unit = clit; }
