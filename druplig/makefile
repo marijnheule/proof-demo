@@ -1,0 +1,15 @@
+CC=gcc
+CFLAGS=-Wall -O3 -DNDEBUG -DNSIG -DVERSION=\"009\"
+all: libdruplig.a testdruplig
+libdruplig.a: druplig.o
+	ar rc $@ druplig.o
+	ranlib $@
+testdruplig: testdruplig.o libdruplig.a makefile
+	$(CC) $(CFLAGS) -o $@ testdruplig.o -L. -ldruplig
+druplig.o: druplig.c druplig.h makefile
+	$(CC) $(CFLAGS) -c druplig.c
+testdruplig.o: testdruplig.c druplig.h makefile
+	$(CC) $(CFLAGS) -c testdruplig.c
+clean:
+	rm -f libdruplig.a testdruplig log/*.log
+.PHONY: all clean
