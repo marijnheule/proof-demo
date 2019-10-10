@@ -6,13 +6,14 @@ create the file ~/sbcl/sbcl containing the following:
   #!/bin/sh
   ~/sbcl/src/runtime/sbcl --core ~/sbcl/output/sbcl.core --dynamic-space-size 5000 "$@"
 
+make it executable: chmod +x ~/sbcl/sbcl
+
 # install the essential parts of ACL2 and the checker:
 git clone https://github.com/acl2/acl2.git
 cd ~/acl2
 export SBCL_HOME=~/sbcl/
 make LISP=~/sbcl/sbcl
-~/acl2/books/build/cert.pl --acl2 ~/acl2/saved_acl2
-~/acl2/books/projects/sat/lrat/cube/*.lisp
+~/acl2/books/build/cert.pl --acl2 ~/acl2/saved_acl2 ~/acl2/books/projects/sat/lrat/cube/*.lisp
 
 # create the executable in ACL2 as follows:
 cd ~/acl2/books/projects/sat/lrat/cube/
