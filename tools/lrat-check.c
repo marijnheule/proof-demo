@@ -1,6 +1,6 @@
 /************************************************************************************[lrat-check.c]
-Copyright (c) 2017-2018 Marijn Heule, The University of Texas at Austin.
-Last edit, October 27, 2018
+Copyright (c) 2017-2020 Marijn Heule, Carnegie Mellon University
+Last edit: September 5, 2020
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
 associated documentation files (the "Software"), to deal in the Software without restriction,
@@ -21,6 +21,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <sys/time.h>
 
 #define DELETED		-1
 #define SUCCESS		1
@@ -29,10 +30,21 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 #define LRAT		200
 #define CLRAT		300
 
-long long *mask, now;
+void usage(char *name) {
+  printf("Usage: %s FILE1.cnf FILE2.lrat [optional: FILE3.drat]\n", name);
+  exit(0);
+}
+
+long long added_clauses = 0;
+long long deleted_clauses = 0;
+long long live_clauses = 0;
+long long max_live_clauses = 0;
+
+long long *mask, *intro, now, lastIndex;
 
 int *clsList, clsAlloc, clsLast;
 int *table, tableSize, tableAlloc, maskAlloc;
+int *litList, litCount, litAlloc;
 
 int  getType   (int* list) { return list[1]; }
 int  getIndex  (int* list) { return list[0]; }
@@ -47,6 +59,7 @@ void printClause (int* clause) {
 
 int checkRedundancy (int pivot, int start, int *hints, long long thisMask) {
   int res = abs(*hints++);
+  assert (start <= res);
 
   if (res != 0) {
     while (start < res) {
@@ -55,11 +68,10 @@ int checkRedundancy (int pivot, int start, int *hints, long long thisMask) {
         while (*clause) {
           int clit = convertLit (*clause++);
           if (clit == (pivot^1)) return FAILED; } } }
-    if (clsList[res] == DELETED) { printf ("c ERROR: using DELECT clause\n"); exit (2); };
+    if (clsList[res] == DELETED) { printf ("c ERROR: using DELETED clause\n"); exit (2); };
     int flag = 0, *clause = table + clsList[res];
     while (*clause) {
       int clit = convertLit (*clause++);
-      assert (clit < maskAlloc);
       if (clit == (pivot^1)) { flag = 1; continue; }
       if (mask[clit  ] >= thisMask) continue;       // lit is falsified
       if (mask[clit^1] >= thisMask) return SUCCESS; // blocked
@@ -67,15 +79,15 @@ int checkRedundancy (int pivot, int start, int *hints, long long thisMask) {
     if (flag == 0) return FAILED; }
 
   while (*hints > 0) {
-    if (clsList[*hints] == DELETED) { printf ("c ERROR: using DELECT clause\n"); exit (2); };
+    if (clsList[*hints] == DELETED) { printf ("c ERROR: using DELETED clause\n"); exit (2); };
     int unit = 0, *clause = table + clsList[*(hints++)];
     while (*clause) {
       int clit = convertLit (*(clause++));
-      assert (clit < maskAlloc);
       if (mask[clit] >= thisMask) continue; // lit is falsified
       if (unit != 0) return FAILED;
       unit = clit; }
     if (unit == 0) return SUCCESS;
+    if (mask[unit^1] == thisMask) printf ("c WARNING hint already satisfied in lemma with index %lli\n", lastIndex);
     mask[unit^1] = thisMask; }
 
   if (res == 0) return SUCCESS;
@@ -83,25 +95,39 @@ int checkRedundancy (int pivot, int start, int *hints, long long thisMask) {
 
 int checkClause (int* list, int size, int* hints) {
   now++;
-  int i, pivot = convertLit (list[0]);
+  int i, j, pivot = convertLit (list[0]);
   int RATs = getRATs (hints + 1);
   for (i = 0; i < size; i++) {
     int clit = convertLit (list[i]);
-    if (clit >= maskAlloc) {
+    if (clit >= maskAlloc) { // in case we encountered a new literal
+      int old = maskAlloc;  // need to set intro?
       maskAlloc = (clit * 3) >> 1;
-//      printf("c realloc mask to %i\n", maskAlloc);
-      mask = (long long *) realloc (mask, sizeof (long long) * maskAlloc);
-      if (mask == NULL) exit(0); }
-    mask [clit] = now + RATs; }
+      mask  = (long long *) realloc (mask,  sizeof (long long) * maskAlloc);
+      intro = (long long *) realloc (intro, sizeof (long long) * maskAlloc);
+      if (!mask || !intro) { printf ("c Memory allocation failure\n"); exit (1); }
+      for (j = old; j < maskAlloc; j++) mask[j] = intro[j] = 0; }
+    mask [clit] = now + RATs; } // mark all literals in lemma with mask
 
   int res = checkRedundancy (pivot, 0, hints, now + RATs);
   if (res  == FAILED) return FAILED;
   if (RATs == 0)      return SUCCESS;
 
-  int start = 1;
+  int *first = hints; first++; while (*first > 0) first++;
+  int start = intro[pivot ^ 1];
+  while (start < -first[0]) {
+    if (clsList[start] != DELETED) {
+      int *clause = table + clsList[start];
+      while (*clause) {
+        int clit = convertLit (*clause++);
+        if (clit == (pivot^1)) return FAILED; } }
+    start++; }
+  intro[pivot ^ 1] = -first[0];
+
+  if (start == 0) return SUCCESS;
   while (1) {
     hints++; now++; while (*hints > 0) hints++;
     if (*hints == 0) break;
+    assert (-hints[0] >= start);
     if (checkRedundancy (pivot, start, hints, now) == FAILED) return FAILED;
     start = abs(*hints) + 1; }
 
@@ -114,7 +140,7 @@ int checkClause (int* list, int size, int* hints) {
 
   return SUCCESS; }
 
-void addClause (int index, int* literals, int size) {
+void addClause (int index, int* literals, int size, FILE* drat) {
   if (index >= clsAlloc) {
     int i = clsAlloc;
     clsAlloc = (index * 3) >> 1;
@@ -126,56 +152,113 @@ void addClause (int index, int* literals, int size) {
     table = (int*) realloc (table, sizeof (int) * tableAlloc); }
 
   clsList[index] = tableSize;
-  int i; for (i = 0; i < size; i++) table[tableSize++] = literals[i];
+  int i; for (i = 0; i < size; i++) {
+    int clit = convertLit (literals[i]);
+    if (intro[clit] == 0) intro[clit] = index;
+    if (drat != NULL) fprintf (drat, "%i ", literals[i]);
+    table[tableSize++] = literals[i]; }
+  if (drat != NULL) fprintf (drat, "0\n");
   table[tableSize++] = 0;
-  clsLast = index; }
+  clsLast = index;
+  added_clauses++;
+  live_clauses++;
+  if (live_clauses > max_live_clauses)
+      max_live_clauses = live_clauses;
+}
 
-void deleteClauses (int* list) {
+void deleteClauses (int* list, FILE* drat) {
   while (*list) {
     int index = *list++;
     if (clsList[index] == DELETED) {
       printf ("c WARNING: clause %i is already deleted\n", index); }
-    clsList[index] = DELETED; } }
+    else {
+      if (drat) {
+        int* clause = table + clsList[index];
+        fprintf (drat, "d ");
+        while (*clause) fprintf (drat, "%i ", *clause++);
+        fprintf (drat, "0\n"); }
+      clsList[index] = DELETED;
+      deleted_clauses++;
+      live_clauses--; }
+  }
+}
 
-int parseLine (FILE* file, int *list, int mode) {
-  int lit, index, tmp, count = 0;
+static void addLit (int lit) {
+  if (litCount >= litAlloc) {
+    litAlloc = (litAlloc * 3) >> 1;
+    litList = (int*) realloc (litList, sizeof (int) * litAlloc); }
+  litList[litCount++] = lit; }
+
+int parseLine (FILE* file, int mode, int line) {
+  int lit, tmp;
+  litCount = 0;
+  char c = 0;
+  while (1) {
+    tmp = fscanf (file, " c%c", &c);
+    if (tmp == EOF) return 0;
+    if (tmp ==   0) break;
+    while (1) {
+      if (tmp == EOF ) return 0;
+      if (c   == '\n') break;
+      tmp = fscanf (file, "%c", &c); } }
 
   if (mode == CNF) {
+    line++;
     while (1) {
       tmp = fscanf (file, " %i ", &lit);
       if (tmp == 0 || tmp == EOF) return 0;
-      list[count++] = lit;
-      if (lit == 0) return count; } }
+      int clit = convertLit (lit);
+      if (intro[clit] == 0)
+        intro[clit] = line;
+      addLit (lit);
+      if (lit == 0) return litCount; } }
 
   if (mode == LRAT) {
+    int index;
     int zeros = 2;
     tmp = fscanf (file, " %i ", &index);
     if (tmp == 0 || tmp == EOF) return 0;
-    list[count++] = index;
+    addLit (index);
 
     tmp = fscanf (file, " d %i ", &lit);
     if (tmp == 1) {
-      list[count++] = (int) 'd';
-      list[count++] = lit; zeros--;
+      addLit ((int) 'd');
+      addLit (lit);
+      zeros--;
       if (lit   == 0) zeros--;
-      if (zeros == 0) return count; }
-    else { list[count++] = (int) 'a'; }
+      if (zeros == 0) {
+	  //	  printf("Processed line %d %c.  Length = %d\n", litList[1], litList[2], litCount);
+	  return litCount; }
+    }
+    else { addLit((int) 'a'); }
 
     while (1) {
       tmp = fscanf (file, " %i ", &lit);
       if (tmp == 0 || tmp == EOF) return 0;
-      list[count++] = lit;
+      addLit(lit);
       if (lit   == 0) zeros--;
-      if (zeros == 0) return count; } }
-
+      if (zeros == 0) {
+	  //	  printf("Processed line %d %c.  Length = %d\n", litList[0], litList[1], litCount);
+	  return litCount; }
+    }
+  }
   return 0; }
 
 int main (int argc, char** argv) {
+  if (argc < 3)
+     usage(argv[0]);
+  struct timeval start_time, finish_time;
+  int return_code = 0;
+  gettimeofday(&start_time, NULL);
   now = 0, clsLast = 0;
 
   int i, nVar = 0, nCls = 0;
   char ignore[1024];
   FILE* cnf   = fopen (argv[1], "r");
+  if (!cnf) {
+      printf("Couldn't open file '%s'\n", argv[1]);
+      exit(1); }
+
   for (;;) {
     fscanf (cnf, " p cnf %i %i ", &nVar, &nCls);
     if (nVar > 0) break;
@@ -192,46 +275,69 @@ int main (int argc, char** argv) {
   tableAlloc = nCls * 2;
   table = (int *) malloc (sizeof(int) * tableAlloc);
 
-  int* list = (int*) malloc (sizeof (int) * nVar * 10);
+  litAlloc = nVar * 10;
+  litList = (int*) malloc (sizeof (int) * litAlloc);
+
+  maskAlloc = 20 * nVar;
+  mask  = (long long*) malloc (sizeof(long long) * maskAlloc);
+  intro = (long long*) malloc (sizeof(long long) * maskAlloc);
+  for (i = 0; i < maskAlloc; i++) mask[i] = intro[i] = 0;
+
   int index = 1;
   while (1) {
-    int size = parseLine (cnf, list, CNF);
+    int size = parseLine (cnf, CNF, index);
     if (size == 0) break;
-    addClause (index++, list, size); }
+    addClause (index++, litList, size, NULL); }
   fclose (cnf);
 
   printf ("c parsed a formula with %i variables and %i clauses\n", nVar, nCls);
 
-  maskAlloc = 20 * nVar;
-  mask = (long long*) malloc (sizeof(long long) * maskAlloc);
-  for (i = 0; i < maskAlloc; i++) mask[i] = 0;
-
   FILE* proof = fopen (argv[2], "r");
+  if (!proof) {
+    printf("c Couldn't open file '%s'\n", argv[2]);
+    exit(1); }
+
+  FILE* drat = NULL;
+  if (argc > 3) {
+    drat = fopen (argv[3], "w");
+    if (!drat) {
+      printf("c Couldn't open file '%s'\n", argv[3]);
+      exit(1); } }
+
   int mode = LRAT;
   while (1) {
-    int size = parseLine (proof, list, mode);
+    int size = parseLine (proof, mode, index);
     if (size == 0) break;
 
-    if (getType (list) == (int) 'd') {
-      deleteClauses (list + 2); }
-    else if (getType (list) == (int) 'a') {
-      int  index  = getIndex  (list);
-      int  length = getLength (list);
-      int* hints  = getHints  (list);
+    if (getType (litList) == (int) 'd') {
+      deleteClauses (litList + 2, drat); }
+    else if (getType (litList) == (int) 'a') {
+      int  index  = getIndex  (litList);
+      lastIndex = index;
+      int  length = getLength (litList);
+      int* hints  = getHints  (litList);
 
-      if (checkClause (list + 2, length, hints) == SUCCESS) {
-        addClause (index, list + 2, length); }
+      if (checkClause (litList + 2, length, hints) == SUCCESS) {
+        addClause (index, litList + 2, length, drat); }
       else {
-        printf("c failed to check clause: "); printClause (list + 2);
+        printf("c failed to check clause: "); printClause (litList + 2);
         printf("c NOT VERIFIED\n");
-        exit (0); }
-
-      if (length == 0) {
+        return_code = 1;
+      }
+      if (length == 0)
         printf ("c VERIFIED\n");
-        exit (1); }
     }
     else {
       printf ("c failed type\n");
-      exit (0); }
+      return_code = 1;
+    }
   }
+
+  gettimeofday(&finish_time, NULL);
+  double secs = (finish_time.tv_sec + 1e-6 * finish_time.tv_usec) -
+      (start_time.tv_sec + 1e-6 * start_time.tv_usec);
+  printf("c Added clauses = %lld.  Deleted clauses = %lld.  Max live clauses = %lld\n",
+	 added_clauses, deleted_clauses, max_live_clauses);
+  printf("c verification time = %.2f secs\n", secs);
+  return return_code;
 }
