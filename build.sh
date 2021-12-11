@@ -7,3 +7,4 @@ cd iglucose/simp; make; cd ../..
 cd cadical; ./configure; make; cd ..
 cd druplig; ./configure.sh; make; cd ..
 cd lingeling-bbc; ./configure.sh; make; cd ..
+cd cake_lpr; make; cd ..
