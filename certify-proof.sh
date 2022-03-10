@@ -11,7 +11,11 @@ set -x
 ls -l proof/R_4_4_18.*lrat
 
 # Certify the CLRAT proof using ACL2
-~/acl2/books/projects/sat/lrat/cube/run.sh cnf/R_4_4_18.cnf proof/R_4_4_18.clrat cnf/copy
+# ~/acl2/books/projects/sat/lrat/cube/run.sh cnf/R_4_4_18.cnf proof/R_4_4_18.clrat cnf/copy
 
 # Check whether the parsed formula and the checked formula are identical
-diff cnf/R_4_4_18.cnf cnf/copy
+# diff cnf/R_4_4_18.cnf cnf/copy
+
+# Certify the LRAT proof using CakeML
+./cake_lpr/cake_lpr cnf/R_4_4_18.cnf proof/R_4_4_18.lrat
+
