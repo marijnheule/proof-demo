@@ -24,6 +24,8 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 #include <assert.h>
 #include <sys/time.h>
 
+//#define PARTIALPROOF
+
 #define TIMEOUT     40000
 #define BIGINIT     1000000
 #define INIT        4
@@ -56,12 +58,12 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 struct solver { FILE *inputFile, *proofFile, *lratFile, *traceFile, *activeFile;
     int *DB, nVars, timeout, mask, delete, *falseStack, *falseA, *forced, binMode, optimize, binOutput,
       *processed, *assigned, count, *used, *max, COREcount, RATmode, RATcount, nActive, *lratTable,
-      nLemmas, maxRAT, *RATset, *preRAT, maxDependencies, nDependencies, bar, backforce, reduce,
-      *dependencies, maxVar, maxSize, mode, verb, unitSize, prep, *current, nRemoved, warning,
-      delProof, *setMap, *setTruth;
+      nLemmas, maxRAT, *preRAT, maxDependencies, nDependencies, bar, backforce, reduce,
+      *dependencies, maxVar, maxSize, mode, verb, unitSize, unitStackSize, prep, *current, nRemoved, warning,
+      delProof, *setMap, *setTruth, rupOnly;
     char *coreStr, *lemmaStr;
     struct timeval start_time;
-    long mem_used, time, nClauses, nStep, nOpt, nAlloc, *unitStack, *reason, lemmas, nResolve,
+    long mem_used, time, nClauses, nStep, nOpt, nAlloc, *unitStack, *reason, lemmas, nResolve, *RATset,
          nReads, nWrites, lratSize, lratAlloc, *lratLookup, **wlist, *optproof, *formula, *proof;  };
 
 static inline void assign (struct solver* S, int lit) {
@@ -80,7 +82,6 @@ static inline void printClause (int* clause) {
 static inline void addWatchPtr (struct solver* S, int lit, long watch) {
   if (S->used[lit] + 1 == S->max[lit]) { S->max[lit] *= 1.5;
     S->wlist[lit] = (long *) realloc (S->wlist[lit], sizeof (long) * S->max[lit]);
-//    if (S->max[lit] > 1000) printf("c watchlist %i increased to %i\n", lit, S->max[lit]);
     if (S->wlist[lit] == NULL) { printf("c MEMOUT: reallocation failed for watch list of %i\n", lit); exit (0); } }
   S->wlist[lit][ S->used[lit]++ ] = watch | S->mask;
   S->wlist[lit][ S->used[lit]   ] = END; }
@@ -102,6 +103,12 @@ static inline void removeWatch (struct solver* S, int* clause, int index) {
       S->wlist[lit][ S->used[lit] ] = END; return; } } }
 
 static inline void addUnit (struct solver* S, long index) {
+//  printf("c adding unit %i\n", S->DB[index]);
+  if (S->unitSize >= S->unitStackSize) {
+    S->unitStackSize = (S->unitStackSize * 3) >> 1;
+    S->unitStack = (long*) realloc (S->unitStack, sizeof(long) * S->unitStackSize);
+    if (S->unitStack == NULL) {
+      printf ("c failed to reallocate unit stack\n"); exit (0); } }
   S->unitStack[S->unitSize++] = index; }
 
 static inline void removeUnit (struct solver* S, int lit) {
@@ -144,6 +151,9 @@ static inline void markClause (struct solver* S, int* clause, int index) {
   if ((clause[index + ID] & ACTIVE) == 0) {
     S->nActive++;
     clause[index + ID] |= ACTIVE;
+//#ifdef PARTIALPROOF
+//    if ((clause + index) > (S->DB + S->firstLemma))  // don't delete original clauses
+//#endif
     if ((S->mode == BACKWARD_UNSAT) && clause[index + 1]) {
       S->optproof[S->nOpt++] = (((long) (clause - S->DB) + index) << INFOBITS) + 1; }
     if (clause[1 + index] == 0) return;
@@ -160,12 +170,14 @@ void analyze (struct solver* S, int* clause, int index) {     // Mark all clause
         markClause (S, S->DB + S->reason[abs (lit)], -1);
         if (S->assigned >= S->forced)
           S->reason[abs (lit)] = 0; } }
+#ifndef PARTIALPROOF
     else if (S->falseA[lit] == ASSUMED && !S->RATmode && S->reduce && !S->lratFile) { // Remove unused literal
       S->nRemoved++;
       int *tmp = S->current;
       while (*tmp != lit) tmp++;
       while (*tmp) { tmp[0] = tmp[1]; tmp++; }
       tmp[-1] = 0; }
+#endif
     if (S->assigned >= S->forced) S->reason[abs (lit)] = 0;
     S->falseA[lit] = (S->assigned < S->forced); }
 
@@ -439,7 +451,9 @@ void postprocess (struct solver *S) {
 void lratAdd (struct solver *S, int elem) {
   if (S->lratSize == S->lratAlloc) {
     S->lratAlloc = S->lratAlloc * 3 >> 1;
-    S->lratTable = (int *) realloc (S->lratTable, sizeof (int) * S->lratAlloc); }
+    S->lratTable = (int *) realloc (S->lratTable, sizeof (int) * S->lratAlloc);
+    if (S->lratTable == NULL) {
+      printf ("c MEMOUT: failed to reallocate lrat table\n"); exit (0); } }
   S->lratTable[S->lratSize++] = elem; }
 
 void printDependenciesFile (struct solver *S, int* clause, int RATflag, int mode) {
@@ -553,7 +567,7 @@ int checkRAT (struct solver *S, int pivot, int mark) {
               continue; }
 	    if (nRAT == S->maxRAT) {
 	      S->maxRAT = (S->maxRAT * 3) >> 1;
-	      S->RATset = realloc (S->RATset, sizeof (int) * S->maxRAT);
+	      S->RATset = realloc (S->RATset, sizeof (long) * S->maxRAT);
               assert (S->RATset != NULL); }
 	    S->RATset[nRAT++] = S->wlist[i][j] >> 1;
             break; } } } }
@@ -561,10 +575,10 @@ int checkRAT (struct solver *S, int pivot, int mark) {
   // S->prep = 1;
   // Check all clauses in RATset for RUP
   int flag = 1;
-  qsort (S->RATset, nRAT, sizeof (int), compare);
+  qsort (S->RATset, nRAT, sizeof (long), compare);
   S->nDependencies = 0;
   for (i = nRAT - 1; i >= 0; i--) {
-    int* RATcls = S->DB + S->RATset[i];
+    int* RATcls = (int*) (S->DB + S->RATset[i]);
     int id = RATcls[ID] >> 1;
     int blocked = 0;
     long int reason  = 0;
@@ -582,7 +596,7 @@ int checkRAT (struct solver *S, int pivot, int mark) {
       S->reason[abs (blocked)] = 0; }
 
     if (!blocked) {
-      RATcls = S->DB + S->RATset[i];
+      RATcls = (int*) (S->DB + S->RATset[i]);
       while (*RATcls) {
         int lit = *RATcls++;
         if (lit != -pivot && !S->falseA[lit]) {
@@ -642,6 +656,9 @@ int redundancyCheck (struct solver *S, int *clause, int size, int mark) {
 
   // Failed RUP check.  Now test RAT.
   // printf ("RUP check failed.  Starting RAT check.\n");
+  if (S->rupOnly) {
+      printf ("\rc RUP check failed\n");
+      return FAILED; }
   int reslit = clause[PIVOT];
   if (S->verb)
     printf ("\rc RUP checked failed; starting RAT check on pivot %d.\n", reslit);
@@ -781,13 +798,18 @@ int verify (struct solver *S, int begin, int end) {
           if (S->verb) { printf("c removing proof step: d "); printClause(lemmas); }
           S->proof[step] = 0; continue; } }
       else {
+//        printf ("c unit %i\n", lit);
+//        if (S->falseA[-lit]) S->reason[abs(lit)] = (lemmas - S->DB) + 1;
         if (S->mode == BACKWARD_UNSAT && S->falseA[-lit]) { S->proof[step] = 0; continue; }
         else { addUnit (S, (long) (lemmas - S->DB)); } } }
 
     if (d && lemmas[1]) { // if delete and not unit
       if ((S->reason[abs (lemmas[0])] - 1) == (lemmas - S->DB)) { // what is this check?
         if (S->mode != FORWARD_SAT) { // ignore pseudo unit clause deletion
-          if (S->verb) { printf ("c ignoring deletion intruction %li: ", (lemmas - S->DB)); printClause (lemmas); }
+          if (S->warning != NOWARNING) {
+            if (S->verb) { printf ("\rc WARNING: ignoring deletion instruction %li: ", (lemmas - S->DB)); printClause (lemmas); } }
+          if (S->warning == HARDWARNING) exit (HARDWARNING);
+          if (S->verb) { printf ("c ignoring deletion instruction %li: ", (lemmas - S->DB)); printClause (lemmas); }
 //        if (S->mode == BACKWARD_UNSAT) { // ignore pseudo unit clause deletion
           S->proof[step] = 0; }
         else { // if (S->mode == FORWARD_SAT) { // also for FORWARD_UNSAT?
@@ -846,11 +868,12 @@ int verify (struct solver *S, int begin, int end) {
         long ad = S->proof[s];
         int *clause = S->DB + (ad >> INFOBITS);
         if (sortSize(S, clause) >= 0) {
-          if ( (ad & 1) && (clause[ID] & 1)) clause[ID] ^= ACTIVE;
-          if (!(ad & 1))                     clause[ID] |= ACTIVE; } } }
+          if ( (ad & 1) && (clause[ID] & ACTIVE)) clause[ID] ^= ACTIVE;
+          if (!(ad & 1))                          clause[ID] |= ACTIVE; } } }
     if (!S->backforce) {
       printf ("\rc ERROR: no conflict\n");
-      return SAT; } }
+      return SAT;
+    } }
 
   start_verification:;
   if (S->mode == FORWARD_UNSAT) {
@@ -1072,6 +1095,7 @@ int parse (struct solver* S) {
     hashTable[i] = (long*) malloc (sizeof (long) * hashMax[i]); }
 
   int fileSwitchFlag = 0;
+  int finalClause = 0;
   size = 0;
   while (1) {
     int lit = 0; tmp = 0;
@@ -1079,7 +1103,7 @@ int parse (struct solver* S) {
 
     if (size == 0) {
       if (fileSwitchFlag) { // read for proof
-        if (S->binMode) {
+        if (S->binMode == 1) {
           int res = getc_unlocked (S->proofFile);
           if      (res == EOF) break;
           else if (res ==  97) del = 0;
@@ -1097,7 +1121,7 @@ int parse (struct solver* S) {
     if (!lit) {
       if (!fileSwitchFlag) tmp = fscanf (S->inputFile, " %i ", &lit);  // Read a literal.
       else {
-        if (S->binMode) {
+        if (S->binMode == 1) {
           tmp = read_lit (S, &lit); }
         else {
           tmp = fscanf (S->proofFile, " %i ", &lit); } }
@@ -1109,10 +1133,11 @@ int parse (struct solver* S) {
         fileLine = 0;
         fileSwitchFlag = 1; } }
 
-    if (tmp == 0) {
+    if (!tmp && !S->binMode) {
       char ignore[1<<16];
       if (!fileSwitchFlag) { if (fgets (ignore, sizeof (ignore), S->inputFile) == NULL) printf ("c\n"); }
-      else if (fgets (ignore, sizeof (ignore), S->proofFile) == NULL) printf ("c\n");
+      else                   if (fgets (ignore, sizeof (ignore), S->proofFile) == NULL) printf ("c\n");
+      if (ignore[0] != 'c') continue;
       for (i = 0; i < sizeof ignore; i++) { if (ignore[i] == '\n') break; }
       if (i == sizeof ignore) {
         printf ("c ERROR: comment longer than %zu characters: %s\n", sizeof ignore, ignore);
@@ -1134,7 +1159,7 @@ int parse (struct solver* S) {
       for (i = 0; i < size; ++i) {
         if (buffer[i] == buffer[i+1]) {
           if (S->warning != NOWARNING) {
-            printf ("\rc WARNING: detected and deleted duplicate literal %i at position %i of line %i\n", buffer[i+1], i+1, fileLine); }
+            printf ("\rc WARNING: detected and deleted duplicate literal %i at position %i of proof line %i\n", buffer[i+1], i+1, fileLine); }
           if (S->warning == HARDWARNING) exit (HARDWARNING); }
         else { buffer[j++] = buffer[i]; } }
       buffer[j] = 0; size = j;
@@ -1155,7 +1180,7 @@ int parse (struct solver* S) {
             match = matchClause (S, hashTable[hash], hashUsed[hash], buffer, size);
             if (match == 0) {
               if (S->warning != NOWARNING) {
-                printf ("\rc WARNING: deleted clause on line %i does not occur: ", fileLine); printClause (buffer); }
+                printf ("\rc WARNING: deleted clause on proof line %i does not occur: ", fileLine); printClause (buffer); }
               if (S->warning == HARDWARNING) exit (HARDWARNING);
               goto end_delete; }
             if (S->mode == FORWARD_SAT) S->DB[ match - 2 ] = rem;
@@ -1169,13 +1194,14 @@ int parse (struct solver* S) {
         end_delete:;
         if (del) { del = 0; size = 0; continue; } }
 
-      if (S->mem_used + size + EXTRA > DBsize) { DBsize = (DBsize * 3) >> 1;
+      if (S->mem_used + size + EXTRA >= DBsize) { DBsize = (DBsize * 3) >> 1;
 	S->DB = (int *) realloc (S->DB, DBsize * sizeof (int));
 //        printf("c database increased to %li\n", DBsize);
         if (S->DB == NULL) { printf("c MEMOUT: reallocation of clause database failed\n"); exit (0); } }
       int *clause = &S->DB[S->mem_used + EXTRA - 1];
       if (size != 0) clause[PIVOT] = pivot;
       clause[ID] = 2 * S->count; S->count++;
+      finalClause = S->mem_used + EXTRA - 1;
       if (S->mode == FORWARD_SAT) if (nZeros > 0) clause[ID] |= ACTIVE;
 
       for (i = 0; i < size; ++i) { clause[ i ] = buffer[ i ]; } clause[ i ] = 0;
@@ -1194,7 +1220,7 @@ int parse (struct solver* S) {
         if (S->nStep == S->nAlloc) { S->nAlloc = (S->nAlloc * 3) >> 1;
           S->proof = (long*) realloc (S->proof, sizeof (long) * S->nAlloc);
 //        printf ("c proof allocation increased to %li\n", S->nAlloc);
-        if (S->proof == NULL) { printf("c MEMOUT: reallocation of proof list failed\n"); exit (0); } }
+          if (S->proof == NULL) { printf("c MEMOUT: reallocation of proof list failed\n"); exit (0); } }
         S->proof[S->nStep++] = (((long) (clause - S->DB)) << INFOBITS); }
 
       if (nZeros <= 0) S->nLemmas++;
@@ -1204,7 +1230,9 @@ int parse (struct solver* S) {
    else {
      buffer[size++] = lit;                                // Add literal to buffer
      if (size == bufferAlloc) { bufferAlloc = (bufferAlloc * 3) >> 1;
-       buffer = (int*) realloc (buffer, sizeof (int) * bufferAlloc); } } }
+       buffer = (int*) realloc (buffer, sizeof (int) * bufferAlloc);
+       if (buffer == NULL) {
+        printf ("c MEMOUT: failed to reallocate buffer\n"); exit (0); } } } }
 
   if (S->mode == FORWARD_SAT && active) {
     if (S->warning != NOWARNING)
@@ -1220,15 +1248,19 @@ int parse (struct solver* S) {
           S->proof = (long*) realloc (S->proof, sizeof (long) * S->nAlloc);
 //          printf ("c proof allocation increased to %li\n", S->nAlloc);
           if (S->proof == NULL) { printf("c MEMOUT: reallocation of proof list failed\n"); exit (0); } }
-        S->proof[S->nStep++] = (((int) (clause - S->DB)) << INFOBITS) + 1; } } }
+        S->proof[S->nStep++] = (((long) (clause - S->DB)) << INFOBITS) + 1; } } }
 
   S->DB = (int *) realloc (S->DB, S->mem_used * sizeof (int));
+  if (S->DB == NULL) { printf("c MEMOUT: reallocation of DB failed\n"); exit (0); }
 
   for (i = 0; i < BIGINIT; i++) free (hashTable[i]);
   free (hashTable);
   free (hashUsed);
   free (hashMax);
   free (buffer);
+
+  int *clause = &S->DB[finalClause];
+  clause[ID] |= ACTIVE; // temporary
 
   printf ("\rc finished parsing");
   if (S->nReads) printf (", read %li bytes from proof file", S->nReads);
@@ -1246,7 +1278,7 @@ int parse (struct solver* S) {
   S->optproof   = (long *) malloc (sizeof(long) * (2 * S->nLemmas + S->nClauses));
 
   S->maxRAT = INIT;
-  S->RATset = (int*) malloc (sizeof (int) * S->maxRAT);
+  S->RATset = (long*) malloc (sizeof (long) * S->maxRAT);
   for (i = 0; i < S->maxRAT; i++) S->RATset[i] = 0; // is this required?
 
   S->preRAT = (int*) malloc (sizeof (int) * n);
@@ -1268,7 +1300,8 @@ int parse (struct solver* S) {
                              S->wlist   [ i] = (long*) malloc (sizeof (long) * S->max[ i]);
                              S->wlist   [-i] = (long*) malloc (sizeof (long) * S->max[-i]); }
 
-  S->unitStack = (long *) malloc (sizeof (long) * n);
+  S->unitStackSize = INIT;
+  S->unitStack = (long *) malloc (sizeof (long) * S->unitStackSize);
 
   return retvalue; }
 
@@ -1311,12 +1344,14 @@ void printHelp ( ) {
   printf ("  -O          optimize proof till fixpoint by repeating verification\n");
   printf ("  -C          compress core lemmas (emit binary proof)\n");
   printf ("  -D          delete proof file after parsing\n");
+  printf ("  -I          force ASCII proof parse mode\n");
   printf ("  -i          force binary proof parse mode\n");
   printf ("  -w          suppress warning messages\n");
   printf ("  -W          exit after first warning\n");
   printf ("  -p          run in plain mode (i.e., ignore deletion information)\n\n");
   printf ("  -R          turn off reduce mode\n\n");
   printf ("  -S          run in SAT check mode (forward checking)\n\n");
+  printf ("  -U          only allow RUP additions\n");
   printf ("and input and proof are specified as follows\n\n");
   printf ("  INPUT       input file in DIMACS format\n");
   printf ("  PROOF       proof file in DRAT format (stdin if no argument)\n\n");
@@ -1348,6 +1383,7 @@ int main (int argc, char** argv) {
   S.reduce     = 1;
   S.binMode    = 0;
   S.binOutput  = 0;
+  S.rupOnly    = 0;
   gettimeofday (&S.start_time, NULL);
 
   int i, tmp = 0;
@@ -1366,6 +1402,7 @@ int main (int argc, char** argv) {
       else if (argv[i][1] == 'C') S.binOutput  = 1;
       else if (argv[i][1] == 'D') S.delProof   = 1;
       else if (argv[i][1] == 'i') S.binMode    = 1;
+      else if (argv[i][1] == 'I') S.binMode    = -1;
       else if (argv[i][1] == 'u') S.mask       = 1;
       else if (argv[i][1] == 'v') S.verb       = 1;
       else if (argv[i][1] == 'w') S.warning    = NOWARNING;
@@ -1373,7 +1410,8 @@ int main (int argc, char** argv) {
       else if (argv[i][1] == 'p') S.delete     = 0;
       else if (argv[i][1] == 'R') S.reduce     = 0;
       else if (argv[i][1] == 'f') S.mode       = FORWARD_UNSAT;
-      else if (argv[i][1] == 'S') S.mode       = FORWARD_SAT; }
+      else if (argv[i][1] == 'S') S.mode       = FORWARD_SAT;
+      else if (argv[i][1] == 'U') S.rupOnly    = 1; }
     else {
       tmp++;
       if (tmp == 1) {
@@ -1410,6 +1448,7 @@ int main (int argc, char** argv) {
               printf ("\rc turning on binary mode checking\n");
               S.binMode = 1; break; } } }
         fclose (S.proofFile);
+        if (S.binMode == -1) S.binMode = 0;
         S.proofFile = fopen (argv[2], "r");
         if (S.proofFile == NULL) {
           printf ("\rc error opening \"%s\".\n", argv[i]); return ERROR; } } } }

@@ -6,14 +6,16 @@ Source and proof files are available in the main CakeML repository (https://gith
 The file `cake_lpr.S` is built from the following repository versions
 
 ```
-HOL4: f4896684a972fcd114e6710e022950aedefd0366
+HOL4: c505f5761a545a06f2a80c536262e608021c3955
 
-CakeML: e7a5c005596708fcf02ba333f849a5ae1eefdf8a
+CakeML: 5696cf2a85f55b22b92cbb2810d120e9259e144e
 ```
 
 # Instructions
 
-Running `make` will build the the proof checker `cake_lpr`
+Running `make` will build the the proof checker `cake_lpr`.
+
+Read the `Makefile` for variations, including building natively for ARMv8.
 
 This help string is printed to stdout when `cake_lpr` is run with no arguments:
 
