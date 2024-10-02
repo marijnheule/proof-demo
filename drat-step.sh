@@ -2,7 +2,7 @@ echo "CNF:"
 echo ""
 cat cnf/drat-step.cnf
 echo ""
-echo "PROOF:"
+echo "DERIVATION:"
 echo ""
 cat proof/drat-step.drat
 echo ""
